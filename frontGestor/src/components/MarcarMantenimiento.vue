@@ -55,7 +55,9 @@ const listarPrestamos = async () => {
 
 const marcarPorCodigo = async () => {
   mensaje.value = ''
-  const mov = prestamos.value.find((p) => p.identificador_unico === codigo.value)
+  const mov = prestamos.value.find(
+    (p) => p.identificador_unico.toLowerCase() === codigo.value.toLowerCase(),
+  )
   if (!mov) {
     mensaje.value = 'No se encontró un equipo retirado con ese código.'
     mensajeColor.value = 'red'

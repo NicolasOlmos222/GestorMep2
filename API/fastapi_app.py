@@ -176,9 +176,42 @@ def listar_equipos():
     db.close()
     return result
 
-## 4. Movimientos - Retirar equipo
+# --- Movimientos - Retirar equipo ---
 @app.post("/movimientos/retirar/")
 def retirar_equipo(movimiento: MovimientoIn):
+    db = get_db()
+    cursor = db.cursor(dictionary=True)
+    try:
+        # Buscar docente por DNI
+        cursor.execute("SELECT id_docente FROM docentes WHERE dni=%s", (movimiento.dni,))
+        docente = cursor.fetchone()
+        if not docente:
+            raise HTTPException(404, "Docente no encontrado")
+
+        # Verificar si el equipo ya está prestado (movimiento abierto sin devolución)
+        cursor.execute("""
+            SELECT id_movimiento FROM movimientos
+            WHERE id_equipo=%s AND fecha_hora_devolucion IS NULL
+        """, (movimiento.id_equipo,))
+        movimiento_abierto = cursor.fetchone()
+        if movimiento_abierto:
+            raise HTTPException(400, "El equipo ya está prestado")
+
+        # Registrar nuevo movimiento
+        cursor.execute("""
+            INSERT INTO movimientos (id_equipo, id_docente, fecha_hora_retiro, observaciones, curso)
+            VALUES (%s, %s, %s, %s, %s)
+        """, (movimiento.id_equipo, docente["id_docente"], datetime.now(), movimiento.observaciones, movimiento.curso))
+
+        # Actualizar estado del equipo
+        cursor.execute("UPDATE equipos SET estado='prestado' WHERE id_equipo=%s", (movimiento.id_equipo,))
+        db.commit()
+
+        return {"msg": "Equipo retirado correctamente"}
+    finally:
+        cursor.close()
+        db.close()
+
     db = get_db()
     cursor = db.cursor(dictionary=True)
     # Buscar docente por DNI
@@ -189,12 +222,12 @@ def retirar_equipo(movimiento: MovimientoIn):
         db.close()
         raise HTTPException(404, "Docente no encontrado")
     # Verificar que el equipo esté disponible
-    cursor.execute("SELECT estado FROM equipos WHERE id_equipo=%s", (movimiento.id_equipo,))
+    '''cursor.execute("SELECT estado FROM equipos WHERE id_equipo=%s", (movimiento.id_equipo,))
     equipo = cursor.fetchone()
     if not equipo or equipo["estado"] != "disponible":
         cursor.close()
         db.close()
-        raise HTTPException(400, "Equipo no disponible para retiro")
+        raise HTTPException(400, "Equipo no disponible para retiro")'''
     # Registrar movimiento, con curso
     cursor.execute(
         "INSERT INTO movimientos (id_equipo, id_docente, fecha_hora_retiro, observaciones, curso) VALUES (%s, %s, %s, %s, %s)",
@@ -209,32 +242,33 @@ def retirar_equipo(movimiento: MovimientoIn):
     db.close()
     return {"msg": "Equipo retirado correctamente"}
 
-## 5. Movimientos - Devolver equipo
+# --- Movimientos - Devolver equipo ---
 @app.post("/movimientos/devolver/")
 def devolver_equipo(devolucion: DevolucionIn):
     db = get_db()
-    cursor = db.cursor()
-    cursor.execute(
-        "SELECT id_equipo FROM movimientos WHERE id_movimiento=%s AND fecha_hora_devolucion IS NULL",
-        (devolucion.id_movimiento,)
-    )
-    movimiento = cursor.fetchone()
-    if not movimiento:
+    cursor = db.cursor(dictionary=True)
+    try:
+        # Buscar movimiento abierto
+        cursor.execute("""
+            SELECT id_equipo FROM movimientos
+            WHERE id_movimiento=%s AND fecha_hora_devolucion IS NULL
+        """, (devolucion.id_movimiento,))
+        movimiento = cursor.fetchone()
+        if not movimiento:
+            raise HTTPException(404, "Movimiento no encontrado o ya devuelto")
+
+        # Cerrar movimiento
+        cursor.execute("UPDATE movimientos SET fecha_hora_devolucion=%s WHERE id_movimiento=%s",
+                       (datetime.now(), devolucion.id_movimiento))
+
+        # Actualizar estado del equipo
+        cursor.execute("UPDATE equipos SET estado='disponible' WHERE id_equipo=%s", (movimiento["id_equipo"],))
+        db.commit()
+
+        return {"msg": "Equipo devuelto correctamente"}
+    finally:
         cursor.close()
         db.close()
-        raise HTTPException(404, "Movimiento no encontrado o ya devuelto")
-    cursor.execute(
-        "UPDATE movimientos SET fecha_hora_devolucion=%s WHERE id_movimiento=%s",
-        (datetime.now(), devolucion.id_movimiento)
-    )
-    cursor.execute(
-        "UPDATE equipos SET estado='disponible' WHERE id_equipo=%s",
-        (movimiento[0],)
-    )
-    db.commit()
-    cursor.close()
-    db.close()
-    return {"msg": "Equipo devuelto correctamente"}
 
 ## 6. Movimientos - Marcar mantenimiento
 @app.post("/equipos/mantenimiento/")
@@ -277,6 +311,7 @@ def ver_historial():
                e.estado,
                d.nombre AS nombre_docente,
                d.apellido AS apellido_docente,
+               d.dni AS dni_docente,         -- 👈 agregar acá
                m.fecha_hora_retiro,
                m.fecha_hora_devolucion,
                m.observaciones,
@@ -290,3 +325,4 @@ def ver_historial():
     cursor.close()
     db.close()
     return movimientos
+

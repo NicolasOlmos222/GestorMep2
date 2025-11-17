@@ -30,6 +30,7 @@
 <script setup>
 import { ref, onMounted, watch, nextTick } from 'vue'
 import axios from 'axios'
+const loading = ref(false)
 
 const props = defineProps({
   docente: { type: Object, required: true },
@@ -54,29 +55,42 @@ const listarPrestamos = async () => {
 }
 
 const devolverPorCodigo = async () => {
+  if (loading.value || !codigo.value.trim()) return
+
   mensaje.value = ''
-  const mov = prestamos.value.find((p) => p.identificador_unico === codigo.value)
+  const mov = prestamos.value.find(
+    (p) => p.identificador_unico.toLowerCase() === codigo.value.trim().toLowerCase(),
+  )
+
   if (!mov) {
     mensaje.value = 'No se encontró un equipo prestado con ese código.'
     mensajeColor.value = 'red'
+    codigo.value = ''
     return
   }
+
   await devolverEquipo(mov.id_movimiento)
-  codigo.value = ''
-  nextTick(() => codigoInput.value?.focus())
 }
 
 const devolverEquipo = async (id_movimiento) => {
+  loading.value = true
   try {
     await axios.post(`${apiUrl}/movimientos/devolver/`, {
       id_movimiento,
     })
+
     mensaje.value = 'Equipo devuelto correctamente.'
     mensajeColor.value = 'green'
-    listarPrestamos()
+    codigo.value = ''
+
+    await listarPrestamos()
+    nextTick(() => codigoInput.value?.focus())
   } catch (e) {
     mensaje.value = e.response?.data?.detail || 'Error al devolver equipo.'
     mensajeColor.value = 'red'
+    codigo.value = ''
+  } finally {
+    loading.value = false
   }
 }
 

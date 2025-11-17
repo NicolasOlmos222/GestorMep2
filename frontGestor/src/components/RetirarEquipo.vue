@@ -1,12 +1,10 @@
 <template>
-  <div>
-    <h3>Retirar equipo</h3>
-
-    <!-- Si hay curso seleccionado, aparece el resto -->
-    <div v-if="cursoSeleccionado">
-      <p><strong>Curso seleccionado:</strong> {{ curso }}</p>
-      <form @submit.prevent="retirarPorCodigo" style="margin-bottom: 16px">
-        <label for="codigo" style="margin-top: 10px">Ingresá el código del equipo:</label>
+  <div class="layout-retirar">
+    <!-- Columna izquierda: Escaneo + préstamos -->
+    <div class="columna izquierda">
+      <h3>Escanear equipo</h3>
+      <form @submit.prevent="retirarPorCodigo">
+        <label for="codigo">Ingresá o escaneá el código:</label>
         <input
           v-model="codigo"
           placeholder="Identificador único"
@@ -14,36 +12,37 @@
           ref="codigoInput"
           @keyup.enter="retirarPorCodigo"
         />
+        <button type="submit">Retirar por código</button>
       </form>
 
-      <p style="margin: 14px 0 6px 0">O seleccioná un equipo de la lista:</p>
+      <p v-if="mensaje" :style="{ color: mensajeColor, marginTop: '12px' }">{{ mensaje }}</p>
+
+      <h4 style="margin-top:20px">Tus equipos en préstamo</h4>
+      <ul v-if="prestamos.length > 0" class="lista-prestamos">
+        <li v-for="mov in prestamos" :key="mov.id_movimiento">
+          {{ mov.nombre_equipo }} ({{ mov.identificador_unico }})
+        </li>
+      </ul>
+      <p v-else>No tenés equipos en préstamo.</p>
+    </div>
+
+    <!-- Columna derecha: selección manual -->
+    <div class="columna derecha">
+      <h3>Seleccionar manualmente</h3>
       <div class="equipo-lista">
         <div v-for="equipo in equipos" :key="equipo.id_equipo" class="equipo-card">
           <span>
             {{ equipo.nombre_equipo }} <b>({{ equipo.identificador_unico }})</b>
           </span>
-          <button @click="retirarEquipo(equipo.id_equipo)">Retirar</button>
+          <button @click="retirarEquipo(equipo)">Retirar</button>
         </div>
       </div>
-
-      <p v-if="mensaje" :style="{ color: mensajeColor, marginTop: '12px' }">{{ mensaje }}</p>
-    </div>
-    <div v-else>
-      <!-- Selección de curso -->
-      <form @submit.prevent="seleccionarCurso" style="margin-bottom: 16px">
-        <label for="curso" style="margin-bottom: 5px; display: block">Seleccioná el curso:</label>
-        <select v-model="curso" id="curso" required>
-          <option disabled value="">Elegí curso...</option>
-          <option v-for="c in cursos" :key="c" :value="c">{{ c }}</option>
-        </select>
-        <button type="submit" style="margin-top: 12px">Confirmar curso</button>
-      </form>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, watch, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick } from 'vue'
 import axios from 'axios'
 
 const props = defineProps({
@@ -52,97 +51,154 @@ const props = defineProps({
 
 const apiUrl = 'http://127.0.0.1:8000'
 const equipos = ref([])
+const prestamos = ref([])
 const codigo = ref('')
-const curso = ref('')
-const cursoSeleccionado = ref(false)
 const mensaje = ref('')
 const mensajeColor = ref('green')
 const codigoInput = ref(null)
 
-const cursos = ['1A', '1B', '2A', '2B', '3A', '3B', '4A', '4B', '5A', '5B', '6A', '6B', '7A', '7B']
-
-const seleccionarCurso = () => {
-  if (curso.value) {
-    localStorage.setItem('ultimoCurso', curso.value)
-    cursoSeleccionado.value = true
-    nextTick(() => codigoInput.value?.focus())
-  }
-}
-
 const listarEquipos = async () => {
   const res = await axios.get(`${apiUrl}/equipos/`)
   equipos.value = res.data.filter((eq) => eq.estado === 'disponible')
+
+  const resMov = await axios.get(`${apiUrl}/movimientos/`)
+  prestamos.value = resMov.data.filter(
+    (m) => m.dni_docente === props.docente.dni && !m.fecha_hora_devolucion
+  )
 }
+
 
 const retirarPorCodigo = async () => {
-  mensaje.value = ''
-  const equipo = equipos.value.find((eq) => eq.identificador_unico === codigo.value)
+  if (!codigo.value.trim()) return
+  const codigoBuscado = codigo.value.trim().toLowerCase()
+
+  const resEquipos = await axios.get(`${apiUrl}/equipos/`)
+  const equipo = resEquipos.data.find(
+    (eq) => eq.identificador_unico.toLowerCase() === codigoBuscado
+  )
+
   if (!equipo) {
-    mensaje.value = 'No se encontró un equipo disponible con ese código.'
+    mensaje.value = 'No se encontró el equipo.'
     mensajeColor.value = 'red'
+    codigo.value = ''
     return
   }
-  await retirarEquipo(equipo.id_equipo)
+
+  await retirarEquipo(equipo)
 }
 
-const retirarEquipo = async (id_equipo) => {
+const retirarEquipo = async (equipo) => {
   try {
+    // Buscar movimientos activos
+    const resMov = await axios.get(`${apiUrl}/movimientos/`)
+    const movActivo = resMov.data.find(
+      (m) =>
+        m.id_equipo === equipo.id_equipo &&
+        !m.fecha_hora_devolucion &&
+        m.estado !== 'mantenimiento'
+    )
+
+    if (movActivo) {
+      if (movActivo.dni_docente === props.docente.dni) {
+        // Ya lo tiene el mismo docente
+        mensaje.value = 'Ya tenés este equipo reservado.'
+        mensajeColor.value = 'orange'
+        codigo.value = ''
+        return
+      } else {
+        // Estaba reservado por otro docente → se devuelve automáticamente
+        await axios.post(`${apiUrl}/movimientos/devolver/`, {
+          id_movimiento: movActivo.id_movimiento,
+        })
+        console.log('Equipo devuelto automáticamente del docente anterior')
+      }
+    }
+
+    // Ahora lo retiramos para el docente actual
     await axios.post(`${apiUrl}/movimientos/retirar/`, {
-      id_equipo,
+      id_equipo: equipo.id_equipo,
       dni: props.docente.dni,
       observaciones: '',
-      curso: curso.value,
+      curso: '---', // si no usás curso, lo dejamos genérico
     })
+
     mensaje.value = 'Equipo retirado correctamente.'
     mensajeColor.value = 'green'
     codigo.value = ''
-    listarEquipos()
+    await listarEquipos()
     nextTick(() => codigoInput.value?.focus())
   } catch (e) {
-    mensaje.value = e.response?.data?.detail || 'Error al retirar equipo.'
+    mensaje.value = e.response?.data?.detail || 'quipo retirado correctamente.'
     mensajeColor.value = 'red'
+    codigo.value = ''
   }
 }
 
-// Cuando cambia el docente o se entra al componente
-watch(
-  () => props.docente,
-  () => {
-    mensaje.value = ''
-    codigo.value = ''
-    curso.value = ''
-    cursoSeleccionado.value = false
-    listarEquipos()
-  },
-)
-
 onMounted(() => {
-  mensaje.value = ''
-  codigo.value = ''
-  curso.value = ''
-  cursoSeleccionado.value = false
   listarEquipos()
+  nextTick(() => codigoInput.value?.focus())
 })
 </script>
 
 <style scoped>
+.layout-retirar {
+  display: grid;
+  grid-template-columns: 1fr 2fr; /* izquierda más angosta, derecha más grande */
+  gap: 24px;
+  width: 100%;
+  height: 100vh; /* ocupa toda la altura de la pantalla */
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.columna {
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto; /* scroll si se pasa de la pantalla */
+}
+
+.izquierda {
+  grid-column: 1;
+}
+
+.derecha {
+  grid-column: 2;
+}
+
+.lista-prestamos {
+  list-style: none;
+  padding: 0;
+  margin-top: 12px;
+}
+
+.lista-prestamos li {
+  background: #f8fbff;
+  margin-bottom: 8px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.07);
+  font-size: 0.95rem;
+}
+
 .equipo-lista {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 12px;
-  max-height: 340px;
-  overflow-y: auto;
-  margin-top: 12px;
-  padding-right: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
 }
 
 .equipo-card {
   background: #f8fbff;
-  padding: 12px;
-  border-radius: 10px;
+  padding: 14px;
+  border-radius: 12px;
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.07);
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
+
 </style>
